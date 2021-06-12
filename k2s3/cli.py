@@ -118,8 +118,19 @@ async def shutdown(loop, executor, signal=None):
     loop.stop()
 
 
-def run(name, num_workers, batch_size, batch_interval):
-    async def _run(_name, _num_workers, _batch_size, _batch_interval):
+def run(
+    name, topic, username, password, cert_file, batch_size, batch_interval, num_workers
+):
+    async def _run(
+        _name,
+        _topic,
+        _username,
+        _password,
+        _cert_file,
+        _batch_size,
+        _batch_interval,
+        _num_workers,
+    ):
         tasks = None
         logger.info(f"Starting Worker-{_name}")
         try:
@@ -158,7 +169,18 @@ def run(name, num_workers, batch_size, batch_interval):
                 for task in tasks:
                     task.cancel()
 
-    return asyncio.run(_run(name, num_workers, batch_size, batch_interval))
+    return asyncio.run(
+        _run(
+            name,
+            topic,
+            username,
+            password,
+            cert_file,
+            batch_size,
+            batch_interval,
+            num_workers,
+        )
+    )
 
 
 async def k2s3(
@@ -176,7 +198,16 @@ async def k2s3(
             )
         tasks = [
             loop.run_in_executor(
-                executor, run, i, num_workers, batch_size, batch_interval
+                executor,
+                run,
+                i,
+                topic,
+                username,
+                password,
+                cert_file,
+                batch_size,
+                batch_interval,
+                num_workers,
             )
             for i in range(num_workers)
         ]
