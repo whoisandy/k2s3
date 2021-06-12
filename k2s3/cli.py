@@ -1,9 +1,15 @@
-from asyncio.tasks import wait_for
+# -*- coding: utf-8 -*-
+"""
+MODULE: Kafka to S3 Streamer
+"""
+
+
 import os
 import sys
 import random
 import signal
 import asyncio
+from pathlib import Path
 
 import attr
 import typer
@@ -155,7 +161,9 @@ def run(name, num_workers, batch_size, batch_interval):
     return asyncio.run(_run(name, num_workers, batch_size, batch_interval))
 
 
-async def k2s3(num_workers, batch_size, batch_interval):
+async def k2s3(
+    topic, username, password, cert_file, batch_size, batch_interval, num_workers
+):
     try:
         # start producers and consumers
         # in a process pool executor
@@ -182,10 +190,18 @@ async def k2s3(num_workers, batch_size, batch_interval):
 def main(
     bs: str = typer.Option(..., "--bootstrap-servers", "-bs"),
     gid: str = typer.Option(..., "--group-id", "-gid"),
-    batch_size: int = typer.Option(..., "--batch-size", "-s"),
-    batch_interval: int = typer.Option(..., "--batch-interval", "-p"),
+    topic: str = typer.Option(..., "--topic", "-t"),
+    username: str = typer.Option(..., "--username", "-u"),
+    password: str = typer.Option(..., "--password", "-p"),
+    cert_file: Path = typer.Option(..., "--cert-file", "-c"),
+    commit_size: int = typer.Option(..., "--commit-size", "-s"),
+    commit_interval: int = typer.Option(..., "--commit-interval", "-i"),
+    bucket: str = typer.Option(..., "--bucket", "-b"),
     num_workers: int = typer.Option(1, "--num-workers", "-w"),
 ):
+    """
+    Kafka to S3 Streamer
+    """
 
     cpu_count = psutil.cpu_count(logical=False)
     num_workers = cpu_count if num_workers > cpu_count else num_workers
@@ -195,4 +211,14 @@ def main(
     logger.info(f"Consumer Group ID: {gid}")
     logger.info(f"Num Workers: {num_workers}")
 
-    asyncio.run(k2s3(num_workers, batch_size, batch_interval))
+    asyncio.run(
+        k2s3(
+            topic,
+            username,
+            password,
+            cert_file,
+            commit_size,
+            commit_interval,
+            num_workers,
+        )
+    )
