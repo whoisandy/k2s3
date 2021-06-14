@@ -5,7 +5,6 @@ MODULE: Kafka to S3 Streamer
 
 
 import sys
-import random
 import signal
 import asyncio
 import multiprocessing as mp
@@ -66,7 +65,6 @@ async def producer(
                 break
     except Exception as err:
         logger.error(err)
-        sys.exit(1)
     finally:
         await consumer.stop()
 
