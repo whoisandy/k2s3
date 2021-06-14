@@ -11,6 +11,7 @@ import asyncio
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+from typing import List
 
 import typer
 import uvloop
@@ -20,6 +21,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from loguru import logger
+from aiokafka import AIOKafkaConsumer
 from janus import Queue, PriorityQueue
 
 
@@ -31,24 +33,42 @@ config = {
         {
             "sink": sys.stdout,
             "format": "{time:YYYY-MM-DD HH:mm:ss} - {process.name} – [{process.id}] - {level} - {message}",
+            "backtrace": False,
+            "diagnose": True,
         },
     ],
 }
 logger.configure(**config)
 
 
-async def producer(queue):
-    # TODO: consumer acting as
-    # an internal producer to
-    # streamer workers for sized
-    # and periodic batching
-    while True:
-        try:
-            msg = {"id": random.randint(1, 10)}
-            await queue.join()
-            await queue.put(msg)
-        except asyncio.CancelledError:
-            break
+def deserializer(value):
+    return json.loads(value)
+
+
+async def producer(
+    queue, topic, bootstrap_servers, group_id, _username, _password, _cert_file
+):
+    try:
+        consumer = AIOKafkaConsumer(
+            topic,
+            bootstrap_servers=bootstrap_servers,
+            group_id=group_id,
+            value_deserializer=deserializer,
+        )
+
+        await consumer.start()
+        # Consume messages
+        async for msg in consumer:
+            try:
+                await queue.join()
+                await queue.put(msg)
+            except asyncio.CancelledError:
+                break
+    except Exception as err:
+        logger.error(err)
+        sys.exit(1)
+    finally:
+        await consumer.stop()
 
 
 async def periodic(interval, periodic_event):
@@ -57,7 +77,7 @@ async def periodic(interval, periodic_event):
         periodic_event.set()
 
 
-async def consumer(queue, p_queue, periodic_event, batch_size):
+async def mapper(queue, p_queue, periodic_event, batch_size):
     batch = list()
     while True:
         try:
@@ -140,10 +160,22 @@ def run(*args):
             p_queue = PriorityQueue()
             periodic_event = asyncio.Event()
 
-            producer_worker = producer(queue.async_q)
+            producer_worker = producer(
+                queue.async_q,
+                _topic,
+                _bs,
+                _gid,
+                _username,
+                _password,
+                _cert_file,
+            )
 
-            consumer_worker = [
-                consumer(queue.async_q, p_queue.async_q, periodic_event, _batch_size)
+            periodic_worker = asyncio.create_task(
+                periodic(_batch_interval, periodic_event)
+            )
+
+            mapper_workers = [
+                mapper(queue.async_q, p_queue.async_q, periodic_event, _batch_size)
                 for _ in range(_num_workers * _num_worker_threads)
             ]
 
@@ -152,15 +184,11 @@ def run(*args):
                 for _ in range(_num_workers * _num_worker_threads)
             ]
 
-            periodic_worker = asyncio.create_task(
-                periodic(_batch_interval, periodic_event)
-            )
-
             workers = [
                 producer_worker,
-                *consumer_worker,
-                *stream_worker,
                 periodic_worker,
+                *mapper_workers,
+                *stream_worker,
             ]
 
             tasks = await asyncio.gather(
@@ -229,7 +257,7 @@ async def k2s3(
 def main(
     bs: str = typer.Option(..., "--bootstrap-servers", "-bs"),
     gid: str = typer.Option(..., "--group-id", "-gid"),
-    topic: str = typer.Option(..., "--topic", "-t"),
+    topic: List[str] = typer.Option(..., "--topic", "-t"),
     username: str = typer.Option(..., "--username", "-u"),
     password: str = typer.Option(..., "--password", "-p"),
     cert_file: Path = typer.Option(..., "--cert-file", "-c"),
