@@ -5,12 +5,16 @@ description = ""
 authors = ["Bhargav Anand <rjn143@gmail.com>"]
 
 [tool.poetry.dependencies]
-python = "^3.7"
-attrs = "^21.2.0"
+python = ">=3.7.1,<4.0"
 janus = "^0.6.1"
 typer = "^0.3.2"
 loguru = "^0.5.3"
 psutil = "^5.8.0"
+orjson = "^3.5.3"
+aiokafka = "^0.7.1"
+uvloop = "^0.15.2"
+pyarrow = "^4.0.1"
+pandas = "^1.2.4"
 
 [tool.poetry.dev-dependencies]
 

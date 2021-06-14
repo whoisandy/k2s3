@@ -8,15 +8,20 @@ import sys
 import random
 import signal
 import asyncio
-from pathlib import Path
 import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 
-import attr
 import typer
+import uvloop
 import psutil
+import orjson as json
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from loguru import logger
 from janus import Queue, PriorityQueue
-from concurrent.futures import ProcessPoolExecutor
+
 
 app = typer.Typer()
 signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT, signal.SIGQUIT)
@@ -32,15 +37,14 @@ config = {
 logger.configure(**config)
 
 
-@attr.s
-class Message:
-    id = attr.ib()
-
-
 async def producer(queue):
+    # TODO: consumer acting as
+    # an internal producer to
+    # streamer workers for sized
+    # and periodic batching
     while True:
         try:
-            msg = Message(id=random.randint(1, 10))
+            msg = {"id": random.randint(1, 10)}
             await queue.join()
             await queue.put(msg)
         except asyncio.CancelledError:
@@ -105,21 +109,24 @@ async def shutdown(loop, signal=None):
     loop.stop()
 
 
-def run(
-    name, topic, username, password, cert_file, batch_size, batch_interval, num_workers
-):
+def run(*args):
     async def _run(
-        _process_idx,
+        _wid,
+        _bs,
+        _gid,
         _topic,
         _username,
         _password,
         _cert_file,
         _batch_size,
         _batch_interval,
+        _bucket,
+        _region,
         _num_workers,
+        _num_worker_threads,
     ):
         tasks = None
-        mp.current_process().name = f"Worker-{_process_idx+1}"
+        mp.current_process().name = f"Worker-{_wid+1}"
         logger.info(f"Starting {mp.current_process().name}")
 
         loop = asyncio.get_event_loop()
@@ -134,17 +141,21 @@ def run(
             periodic_event = asyncio.Event()
 
             producer_worker = producer(queue.async_q)
+
             consumer_worker = [
                 consumer(queue.async_q, p_queue.async_q, periodic_event, _batch_size)
-                for _ in range(_num_workers * 2)
+                for _ in range(_num_workers * _num_worker_threads)
             ]
+
             stream_worker = [
                 asyncio.create_task(streamer(p_queue.async_q))
-                for _ in range(_num_workers * 2)
+                for _ in range(_num_workers * _num_worker_threads)
             ]
+
             periodic_worker = asyncio.create_task(
                 periodic(_batch_interval, periodic_event)
             )
+
             workers = [
                 producer_worker,
                 *consumer_worker,
@@ -164,26 +175,24 @@ def run(
                 for task in tasks:
                     task.cancel()
 
-    return asyncio.run(
-        _run(
-            name,
-            topic,
-            username,
-            password,
-            cert_file,
-            batch_size,
-            batch_interval,
-            num_workers,
-        )
-    )
+    return asyncio.run(_run(*args))
 
 
 async def k2s3(
-    topic, username, password, cert_file, batch_size, batch_interval, num_workers
+    bs,
+    gid,
+    topic,
+    username,
+    password,
+    cert_file,
+    batch_size,
+    batch_interval,
+    bucket,
+    region,
+    num_workers,
+    num_worker_threads,
 ):
     try:
-        # start producers and consumers
-        # in a process pool executor
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             loop = asyncio.get_running_loop()
 
@@ -191,19 +200,23 @@ async def k2s3(
                 loop.add_signal_handler(
                     s, lambda s=s: asyncio.create_task(shutdown(loop, signal=s))
                 )
+
+            run_args = [
+                bs,
+                gid,
+                topic,
+                username,
+                password,
+                cert_file,
+                batch_size,
+                batch_interval,
+                bucket,
+                region,
+                num_workers,
+                num_worker_threads,
+            ]
             tasks = [
-                loop.run_in_executor(
-                    executor,
-                    run,
-                    i,
-                    topic,
-                    username,
-                    password,
-                    cert_file,
-                    batch_size,
-                    batch_interval,
-                    num_workers,
-                )
+                loop.run_in_executor(executor, run, i, *run_args)
                 for i in range(num_workers)
             ]
 
@@ -223,11 +236,18 @@ def main(
     commit_size: int = typer.Option(..., "--commit-size", "-s"),
     commit_interval: int = typer.Option(..., "--commit-interval", "-i"),
     bucket: str = typer.Option(..., "--bucket", "-b"),
-    num_workers: int = typer.Option(1, "--num-workers", "-w"),
+    region: str = typer.Option(..., "--region", "-r"),
+    num_workers: int = typer.Option(
+        psutil.cpu_count(logical=False), "--num-workers", "-W"
+    ),
+    num_worker_threads: int = typer.Option(1, "--num-worker-threads", "-T"),
 ):
     """
     Kafka to S3 Streamer
     """
+    # upgrade event loop
+    # to use libuv over native
+    uvloop.install()
 
     cpu_count = psutil.cpu_count(logical=False)
     num_workers = cpu_count if num_workers > cpu_count else num_workers
@@ -235,16 +255,22 @@ def main(
     logger.info("Starting k2s3 consumer group using configuration...")
     logger.info(f"Bootstrap Servers: {bs}")
     logger.info(f"Consumer Group ID: {gid}")
-    logger.info(f"Num Workers: {num_workers}")
+    logger.info(f"Total Workers: {num_workers}")
+    logger.info(f"Threads per Worker: {num_worker_threads}")
 
     asyncio.run(
         k2s3(
+            bs,
+            gid,
             topic,
             username,
             password,
             cert_file,
             commit_size,
             commit_interval,
+            bucket,
+            region,
             num_workers,
+            num_worker_threads,
         )
     )
