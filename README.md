@@ -6,7 +6,7 @@ Stream JSON messages from Kafka to partitioned Parquet files stored on S3
 
 ## TODO:
 
-- [ ] Add Kafka consumer logic
+- [x] Add Kafka consumer logic
 - [ ] Enable partition columns as cli option
 - [ ] Ability to enable/disable compaction
 - [ ] Ability to alter table with new partitions dynamically
