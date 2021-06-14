@@ -4,12 +4,12 @@ MODULE: Kafka to S3 Streamer
 """
 
 
-import os
 import sys
 import random
 import signal
 import asyncio
 from pathlib import Path
+import multiprocessing as mp
 
 import attr
 import typer
@@ -25,7 +25,7 @@ config = {
     "handlers": [
         {
             "sink": sys.stdout,
-            "format": "{time:YYYY-MM-DD HH:mm:ss} - {process.id} - {level} - {message}",
+            "format": "{time:YYYY-MM-DD HH:mm:ss} - {process.name} – [{process.id}] - {level} - {message}",
         },
     ],
 }
@@ -35,16 +35,6 @@ logger.configure(**config)
 @attr.s
 class Message:
     id = attr.ib()
-
-
-def handler(signum, frame):
-    logger.info(f"Shutting down worker process [pid: {os.getpid()}]")
-    sys.exit(0)
-
-
-def init():
-    for s in signals:
-        signal.signal(s, handler)
 
 
 async def producer(queue):
@@ -98,7 +88,7 @@ async def streamer(p_queue):
             break
 
 
-async def shutdown(loop, executor, signal=None):
+async def shutdown(loop, signal=None):
     """Cleanup tasks tied to the service's shutdown."""
     if signal:
         logger.info(f"Received exit signal {signal.name}...")
@@ -111,9 +101,6 @@ async def shutdown(loop, executor, signal=None):
     logger.info(f"Cancelling {len(tasks)} outstanding tasks")
     await asyncio.gather(*tasks, return_exceptions=True)
 
-    logger.info("Shutting down executor")
-    executor.shutdown()
-
     logger.info(f"Flushing metrics")
     loop.stop()
 
@@ -122,7 +109,7 @@ def run(
     name, topic, username, password, cert_file, batch_size, batch_interval, num_workers
 ):
     async def _run(
-        _name,
+        _process_idx,
         _topic,
         _username,
         _password,
@@ -132,7 +119,15 @@ def run(
         _num_workers,
     ):
         tasks = None
-        logger.info(f"Starting Worker-{_name}")
+        mp.current_process().name = f"Worker-{_process_idx+1}"
+        logger.info(f"Starting {mp.current_process().name}")
+
+        loop = asyncio.get_event_loop()
+        for s in signals:
+            loop.add_signal_handler(
+                s, lambda s=s: asyncio.create_task(shutdown(loop, signal=s))
+            )
+
         try:
             queue = Queue()
             p_queue = PriorityQueue()
@@ -189,30 +184,30 @@ async def k2s3(
     try:
         # start producers and consumers
         # in a process pool executor
-        loop = asyncio.get_running_loop()
-        executor = ProcessPoolExecutor(max_workers=num_workers, initializer=init)
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            loop = asyncio.get_running_loop()
 
-        for s in signals:
-            loop.add_signal_handler(
-                s, lambda s=s: asyncio.create_task(shutdown(loop, executor, signal=s))
-            )
-        tasks = [
-            loop.run_in_executor(
-                executor,
-                run,
-                i,
-                topic,
-                username,
-                password,
-                cert_file,
-                batch_size,
-                batch_interval,
-                num_workers,
-            )
-            for i in range(num_workers)
-        ]
+            for s in signals:
+                loop.add_signal_handler(
+                    s, lambda s=s: asyncio.create_task(shutdown(loop, signal=s))
+                )
+            tasks = [
+                loop.run_in_executor(
+                    executor,
+                    run,
+                    i,
+                    topic,
+                    username,
+                    password,
+                    cert_file,
+                    batch_size,
+                    batch_interval,
+                    num_workers,
+                )
+                for i in range(num_workers)
+            ]
 
-        await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)
     except asyncio.CancelledError:
         pass
 
