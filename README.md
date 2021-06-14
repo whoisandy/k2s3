@@ -2,7 +2,7 @@
 
 > Kafka to S3 Streamer
 
-Stream JSON messages from Kafka to Parquet files stored on S3
+Stream JSON messages from Kafka to partitioned Parquet files stored on S3
 
 ## TODO:
 
